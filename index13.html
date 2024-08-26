@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Segmentation Parameter Tuning</title>
+    <style>
+        .result-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .result-item {
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>Image Segmentation Parameter Tuning</h1>
+    <input type="file" id="imageInput" accept="image/*">
+    <br><br>
+    <div class="controls">
+        <label for="hueThreshold">Hue Threshold:</label>
+        <input type="range" id="hueThreshold" min="0" max="180" value="60">
+        <span id="hueThresholdValue">60</span>
+
+        <label for="saturationThreshold">Saturation Threshold:</label>
+        <input type="range" id="saturationThreshold" min="0" max="1" step="0.01" value="0.95">
+        <span id="saturationThresholdValue">0.95</span>
+
+        <label for="valueThreshold">Value Threshold:</label>
+        <input type="range" id="valueThreshold" min="0" max="1" step="0.01" value="0.96">
+        <span id="valueThresholdValue">0.96</span>
+
+        <label for="minArea">Minimum Area:</label>
+        <input type="range" id="minArea" min="100" max="500000" step="50" value="1450">
+        <span id="minAreaValue">150</span>
+    </div>
+    <div id="resultContainer">
+        <canvas id="resultCanvas"></canvas>
+    </div>
+
+    <script>
+
+
+function floodFill(data, segmentedData, width, height, x, y, hueThreshold, saturationThreshold, valueThreshold, visited) {
+    const stack = [[x, y]];
+    const segment = [];
+    const baseColor = new Uint8Array([
+        data[(y * width + x) * 4],
+        data[(y * width + x) * 4 + 1],
+        data[(y * width + x) * 4 + 2]
+    ]);
+    const baseHSV = rgbToHsv(baseColor[0], baseColor[1], baseColor[2]);
+
+    // Fill the border with original data
+    for (let i = 0; i < width; i++) {
+        copyPixel(data, segmentedData, i, 0, width);
+        copyPixel(data, segmentedData, i, height - 1, width);
+    }
+    for (let i = 1; i < height - 1; i++) {
+        copyPixel(data, segmentedData, 0, i, width);
+        copyPixel(data, segmentedData, width - 1, i, width);
+    }
+
+    while (stack.length) {
+        const [cx, cy] = stack.pop();
+        const index = cy * width + cx;
+
+        if (visited[index]) continue;
+        visited[index] = 1;
+
+        const pixelIndex = index * 4;
+        const currentColor = [data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]];
+        const currentHSV = rgbToHsv(currentColor[0], currentColor[1], currentColor[2]);
+
+        if (isColorSimilarHSV(baseHSV, currentHSV, hueThreshold, saturationThreshold, valueThreshold)) {
+            segment.push(index);
+
+            if (cx > 0) stack.push([cx - 1, cy]);
+            if (cx < width - 1) stack.push([cx + 1, cy]);
+            if (cy > 0) stack.push([cx, cy - 1]);
+            if (cy < height - 1) stack.push([cx, cy + 1]);
+        }
+    }
+
+    return segment;
+}
+
+function copyPixel(sourceData, destData, x, y, width) {
+    const index = (y * width + x) * 4;
+    destData.set(sourceData.slice(index, index + 4), index);
+}
+
+function isColorSimilarHSV(hsv1, hsv2, hueThreshold, saturationThreshold, valueThreshold) {
+    const hueDiff = Math.abs(hsv1[0] - hsv2[0]);
+    const hueDiffWrapped = Math.min(hueDiff, 360 - hueDiff);
+    const saturationDiff = Math.abs(hsv1[1] - hsv2[1]);
+    const valueDiff = Math.abs(hsv1[2] - hsv2[2]);
+
+    return hueDiffWrapped <= hueThreshold &&
+           saturationDiff <= saturationThreshold &&
+           valueDiff <= valueThreshold * Math.max(hsv1[2], hsv2[2]); // Adjust value threshold based on brightness
+}
+
+function findNearestSegmentedColor(segmentedData, width, height, x, y) {
+    const maxDistance = Math.max(width, height);
+    for (let d = 1; d < maxDistance; d++) {
+        for (let i = -d; i <= d; i++) {
+            for (let j = -d; j <= d; j++) {
+                if (Math.abs(i) === d || Math.abs(j) === d) {
+                    const nx = x + i;
+                    const ny = y + j;
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        const index = (ny * width + nx) * 4;
+                        if (segmentedData[index + 3] !== 0) {
+                            return segmentedData.slice(index, index + 4);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return new Uint8Array([0, 0, 0, 255]); // Default to black if no segmented pixel is found
+}
+
+function rgbToHsv(r, g, b) {
+    r /= 255;
+    g /= 255;
+    b /= 255;
+
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const diff = max - min;
+    
+    let h, s, v = max;
+
+    s = max === 0 ? 0 : diff / max;
+
+    if (max === min) {
+        h = 0;
+    } else {
+        switch (max) {
+            case r:
+                h = (g - b) / diff + (g < b ? 6 : 0);
+                break;
+            case g:
+                h = (b - r) / diff + 2;
+                break;
+            case b:
+                h = (r - g) / diff + 4;
+                break;
+        }
+        h /= 6;
+    }
+
+    return [h * 360, s, v];
+}
+
+function segmentImage(imageData, hueThreshold, saturationThreshold, valueThreshold, minArea) {
+
+        // (Include the segmentation code here)
+        // function segmentImage(imageData, threshold = 30) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const data = imageData.data;
+    const segmentedData = new Uint8ClampedArray(data.length);
+    const visited = new Uint8Array(width * height);
+    const segments = [];
+
+    // const hueThreshold = 30; // Increased from 30
+    // const saturationThreshold = 0.9; // Increased from 0.3
+    // const valueThreshold = 0.8; // Increased from 0.4
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const index = y * width + x;
+            if (!visited[index]) {
+                const segment = floodFill(data, segmentedData, width, height, x, y, hueThreshold, saturationThreshold, valueThreshold, visited);
+                if (segment.length >= 1450) {
+                    segments.push(segment);
+                }
+            }
+        }
+    }
+
+    segments.forEach((segment) => {
+        const color = new Uint8Array([
+            Math.floor(Math.random() * 256),
+            Math.floor(Math.random() * 256),
+            Math.floor(Math.random() * 256),
+            255
+        ]);
+        for (let i = 0; i < segment.length; i++) {
+            const idx = segment[i] * 4;
+            segmentedData.set(color, idx);
+        }
+    });
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const index = (y * width + x) * 4;
+            if (segmentedData[index + 3] === 0) {
+                const nearestColor = findNearestSegmentedColor(segmentedData, width, height, x, y);
+                segmentedData.set(nearestColor, index);
+            }
+        }
+    }
+
+    return new ImageData(segmentedData, width, height);
+}
+
+
+
+        // const imageInput = document.getElementById('imageInput');
+        // const hueThresholdInput = document.getElementById('hueThreshold');
+        // const saturationThresholdInput = document.getElementById('saturationThreshold');
+        // const valueThresholdInput = document.getElementById('valueThreshold');
+        // const minAreaInput = document.getElementById('minArea');
+
+
+        const processButton = document.getElementById('processButton');
+        const resultContainer = document.getElementById('resultContainer');
+
+        function displayResult(imageData, hueThreshold, saturationThreshold, valueThreshold, minArea) {
+            const canvas = document.createElement('canvas');
+            canvas.width = imageData.width;
+            canvas.height = imageData.height;
+            const ctx = canvas.getContext('2d');
+            ctx.putImageData(imageData, 0, 0);
+
+            const resultItem = document.createElement('div');
+            resultItem.className = 'result-item';
+            resultItem.innerHTML = `
+                <img src="${canvas.toDataURL()}" alt="Segmented Image">
+                <p>Hue Threshold: ${hueThreshold}</p>
+                <p>Saturation Threshold: ${saturationThreshold}</p>
+                <p>Value Threshold: ${valueThreshold}</p>
+                <p>Minimum Area: ${minArea}</p>
+            `;
+
+            resultContainer.appendChild(resultItem);
+        }
+
+        function updateSegmentation() {
+        if (!originalImageData) return;
+
+        const hueThreshold = parseInt(hueThresholdInput.value);
+        const saturationThreshold = parseFloat(saturationThresholdInput.value);
+        const valueThreshold = parseFloat(valueThresholdInput.value);
+        const minArea = parseInt(minAreaInput.value);
+
+        document.getElementById('hueThresholdValue').textContent = hueThreshold;
+        document.getElementById('saturationThresholdValue').textContent = saturationThreshold.toFixed(2);
+        document.getElementById('valueThresholdValue').textContent = valueThreshold.toFixed(2);
+        document.getElementById('minAreaValue').textContent = minArea;
+
+        const result = segmentImage(originalImageData, hueThreshold, saturationThreshold, valueThreshold, minArea);
+        ctx.putImageData(result, 0, 0);
+    }
+    const imageInput = document.getElementById('imageInput');
+    const hueThresholdInput = document.getElementById('hueThreshold');
+    const saturationThresholdInput = document.getElementById('saturationThreshold');
+    const valueThresholdInput = document.getElementById('valueThreshold');
+    const minAreaInput = document.getElementById('minArea');
+    const resultCanvas = document.getElementById('resultCanvas');
+    const ctx = resultCanvas.getContext('2d');
+
+    let originalImageData;
+    function loadImage(e) {
+        const file = e.target.files[0];
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => {
+                resultCanvas.width = img.width;
+                resultCanvas.height = img.height;
+                ctx.drawImage(img, 0, 0);
+                originalImageData = ctx.getImageData(0, 0, resultCanvas.width, resultCanvas.height);
+                updateSegmentation();
+            };
+            img.src = event.target.result;
+        };
+        reader.readAsDataURL(file);
+    }
+    imageInput.addEventListener('change', loadImage);
+    hueThresholdInput.addEventListener('input', updateSegmentation);
+    saturationThresholdInput.addEventListener('input', updateSegmentation);
+    valueThresholdInput.addEventListener('input', updateSegmentation);
+    minAreaInput.addEventListener('input', updateSegmentation);
+
+    imageInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        hueThresholdInput.addEventListener('input', () => {
+            document.getElementById('hueThresholdValue').textContent = hueThresholdInput.value;
+        });
+        saturationThresholdInput.addEventListener('input', () => {
+            document.getElementById('saturationThresholdValue').textContent = saturationThresholdInput.value;
+        });
+        valueThresholdInput.addEventListener('input', () => {
+            document.getElementById('valueThresholdValue').textContent = valueThresholdInput.value;
+        });
+    </script>
+</body>
+</html>

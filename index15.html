@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multiple Image Segmentation</title>
+    <style>
+        .result-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .result-item {
+            text-align: center;
+            font-size: 12px;
+        }
+        .result-item img {
+            width: 100px;
+            height: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Multiple Image Segmentation</h1>
+    <input type="file" id="imageInput" accept="image/*">
+    <br><br>
+    <button id="processButton">Generate 50 Segmented Images</button>
+    <br><br>
+    <div>
+        <label for="hueThresholdMin">Hue Threshold Min:</label>
+        <input type="range" id="hueThresholdMin" min="0" max="20" value="10" step="0.1">
+        <span id="hueThresholdMinValue">10</span>
+    </div>
+    <div>
+        <label for="hueThresholdMax">Hue Threshold Max:</label>
+        <input type="range" id="hueThresholdMax" min="0" max="20" value="20" step="0.1">
+        <span id="hueThresholdMaxValue">20</span>
+    </div>
+    <div>
+        <label for="saturationThreshold">Saturation Threshold:</label>
+        <input type="range" id="saturationThreshold" min="0" max="1" value="0.5" step="0.01">
+        <span id="saturationThresholdValue">0.5</span>
+    </div>
+    <div>
+        <label for="valueThreshold">Value Threshold:</label>
+        <input type="range" id="valueThreshold" min="0" max="1" value="0.5" step="0.01">
+        <span id="valueThresholdValue">0.5</span>
+    </div>
+    <div>
+        <label for="minArea">Minimum Area:</label>
+        <input type="range" id="minArea" min="1" max="500" value="100" step="1">
+        <span id="minAreaValue">100</span>
+    </div>
+    <div id="resultContainer" class="result-container"></div>
+
+    <script>
+
+// Include your existing functions here: floodFill, copyPixel, isColorSimilarHSV, rgbToHsv, findNearestSegmentedColor
+document.querySelectorAll('input[type="range"]').forEach(slider => {
+    slider.addEventListener('input', () => {
+        document.getElementById(`${slider.id}Value`).textContent = slider.value;
+    });
+});
+
+function getSliderValue(id) {
+    return parseFloat(document.getElementById(id).value);
+}
+
+
+function floodFill(data, segmentedData, width, height, x, y, hueThreshold, saturationThreshold, valueThreshold, visited) {
+    const stack = [[x, y]];
+    const segment = [];
+    const baseColor = new Uint8Array([
+        data[(y * width + x) * 4],
+        data[(y * width + x) * 4 + 1],
+        data[(y * width + x) * 4 + 2]
+    ]);
+    const baseHSV = rgbToHsv(baseColor[0], baseColor[1], baseColor[2]);
+
+    // Fill the border with original data
+    for (let i = 0; i < width; i++) {
+        copyPixel(data, segmentedData, i, 0, width);
+        copyPixel(data, segmentedData, i, height - 1, width);
+    }
+    for (let i = 1; i < height - 1; i++) {
+        copyPixel(data, segmentedData, 0, i, width);
+        copyPixel(data, segmentedData, width - 1, i, width);
+    }
+
+    while (stack.length) {
+        const [cx, cy] = stack.pop();
+        const index = cy * width + cx;
+
+        if (visited[index]) continue;
+        visited[index] = 1;
+
+        const pixelIndex = index * 4;
+        const currentColor = [data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]];
+        const currentHSV = rgbToHsv(currentColor[0], currentColor[1], currentColor[2]);
+
+        if (isColorSimilarHSV(baseHSV, currentHSV, hueThreshold, saturationThreshold, valueThreshold)) {
+            segment.push(index);
+
+            if (cx > 0) stack.push([cx - 1, cy]);
+            if (cx < width - 1) stack.push([cx + 1, cy]);
+            if (cy > 0) stack.push([cx, cy - 1]);
+            if (cy < height - 1) stack.push([cx, cy + 1]);
+        }
+    }
+
+    return segment;
+}
+
+// Helper function to copy a pixel from source to destination
+function copyPixel(sourceData, destData, x, y, width) {
+    const index = (y * width + x) * 4;
+    destData.set(sourceData.slice(index, index + 4), index);
+}
+
+function isColorSimilarHSV(hsv1, hsv2, hueThreshold, saturationThreshold, valueThreshold) {
+    const hueDiff = Math.abs(hsv1[0] - hsv2[0]);
+    const hueDiffWrapped = Math.min(hueDiff, 360 - hueDiff);
+    const saturationDiff = Math.abs(hsv1[1] - hsv2[1]);
+    const valueDiff = Math.abs(hsv1[2] - hsv2[2]);
+
+    return hueDiffWrapped <= hueThreshold &&
+           saturationDiff <= saturationThreshold &&
+           valueDiff <= valueThreshold * Math.max(hsv1[2], hsv2[2]); // Adjust value threshold based on brightness
+}
+
+function findNearestSegmentedColor(segmentedData, width, height, x, y) {
+    const maxDistance = Math.max(width, height);
+    for (let d = 1; d < maxDistance; d++) {
+        for (let i = -d; i <= d; i++) {
+            for (let j = -d; j <= d; j++) {
+                if (Math.abs(i) === d || Math.abs(j) === d) {
+                    const nx = x + i;
+                    const ny = y + j;
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        const index = (ny * width + nx) * 4;
+                        if (segmentedData[index + 3] !== 0) {
+                            return segmentedData.slice(index, index + 4);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return new Uint8Array([0, 0, 0, 255]); // Default to black if no segmented pixel is found
+}
+
+function rgbToHsv(r, g, b) {
+    r /= 255;
+    g /= 255;
+    b /= 255;
+
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const diff = max - min;
+    
+    let h, s, v = max;
+
+    s = max === 0 ? 0 : diff / max;
+
+    if (max === min) {
+        h = 0;
+    } else {
+        switch (max) {
+            case r:
+                h = (g - b) / diff + (g < b ? 6 : 0);
+                break;
+            case g:
+                h = (b - r) / diff + 2;
+                break;
+            case b:
+                h = (r - g) / diff + 4;
+                break;
+        }
+        h /= 6;
+    }
+
+    return [h * 360, s, v];
+}
+
+const hueThresholdMin = getSliderValue('hueThresholdMin');
+const hueThresholdMax = getSliderValue('hueThresholdMax');
+const saturationThreshold = getSliderValue('saturationThreshold');
+const valueThreshold = getSliderValue('valueThreshold');
+const minArea = getSliderValue('minArea');
+
+for (let i = 0; i < 50; i++) {
+    const hueThreshold = hueThresholdMin + (i * (hueThresholdMax - hueThresholdMin) / 49);
+
+    const result = segmentImage(originalImageData, hueThreshold, saturationThreshold, valueThreshold, minArea);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = result.width;
+    canvas.height = result.height;
+    const ctx = canvas.getContext('2d');
+    ctx.putImageData(result, 0, 0);
+
+    const resultItem = document.createElement('div');
+    resultItem.className = 'result-item';
+    resultItem.innerHTML = `
+        <img src="${canvas.toDataURL()}" alt="Segmented Image">
+        <p>Hue: ${hueThreshold.toFixed(2)}</p>
+        <p>Sat: ${saturationThreshold.toFixed(2)}</p>
+        <p>Val: ${valueThreshold.toFixed(2)}</p>
+        <p>Min Area: ${minArea}</p>
+    `;
+
+    resultContainer.appendChild(resultItem);
+}
+
+
+    function segmentImage(imageData, hueThreshold, saturationThreshold, valueThreshold, minArea) {
+        const width = imageData.width;
+        const height = imageData.height;
+        const data = imageData.data;
+        const segmentedData = new Uint8ClampedArray(data.length);
+        const visited = new Uint8Array(width * height);
+        const segments = [];
+
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const index = y * width + x;
+                if (!visited[index]) {
+                    const segment = floodFill(data, segmentedData, width, height, x, y, hueThreshold, saturationThreshold, valueThreshold, visited);
+                    if (segment.length >= minArea) {
+                        segments.push(segment);
+                    }
+                }
+            }
+        }
+
+        segments.forEach((segment) => {
+            const color = new Uint8Array([
+                Math.floor(Math.random() * 256),
+                Math.floor(Math.random() * 256),
+                Math.floor(Math.random() * 256),
+                255
+            ]);
+            for (let i = 0; i < segment.length; i++) {
+                const idx = segment[i] * 4;
+                segmentedData.set(color, idx);
+            }
+        });
+
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const index = (y * width + x) * 4;
+                if (segmentedData[index + 3] === 0) {
+                    const nearestColor = findNearestSegmentedColor(segmentedData, width, height, x, y);
+                    segmentedData.set(nearestColor, index);
+                }
+            }
+        }
+
+        return new ImageData(segmentedData, width, height);
+    }
+
+    const imageInput = document.getElementById('imageInput');
+    const processButton = document.getElementById('processButton');
+    const resultContainer = document.getElementById('resultContainer');
+
+    let originalImageData;
+
+    imageInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            };
+            img.src = event.target.result;
+        };
+        reader.readAsDataURL(file);
+    });
+
+    processButton.addEventListener('click', () => {
+        if (!originalImageData) {
+            alert('Please select an image first.');
+            return;
+        }
+
+        resultContainer.innerHTML = ''; // Clear previous results
+
+        for (let i = 0; i < 50; i++) {
+            const hueThreshold = 10 + (i * 0.2); // Values from 10 to 20
+            const saturationThreshold = 0.5;
+            const valueThreshold = 0.5;
+            const minArea = 100;
+
+            const result = segmentImage(originalImageData, hueThreshold, saturationThreshold, valueThreshold, minArea);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = result.width;
+            canvas.height = result.height;
+            const ctx = canvas.getContext('2d');
+            ctx.putImageData(result, 0, 0);
+
+            const resultItem = document.createElement('div');
+            resultItem.className = 'result-item';
+            resultItem.innerHTML = `
+                <img src="${canvas.toDataURL()}" alt="Segmented Image">
+                <p>Hue: ${hueThreshold.toFixed(2)}</p>
+            `;
+
+            resultContainer.appendChild(resultItem);
+        }
+    });
+    </script>
+</body>
+</html>
